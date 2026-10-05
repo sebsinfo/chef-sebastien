@@ -12,6 +12,7 @@ import {
   Sparkles,
   Image as ImageIcon,
   X,
+  Trash2,
 } from 'lucide-react';
 import { api } from '../../lib/supabase';
 import { StarRating } from '../../components/common/StarRating';
@@ -29,6 +30,8 @@ export const FeedbackList: React.FC = () => {
   const [serviceFilter, setServiceFilter] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
+  const [feedbackToDelete, setFeedbackToDelete] = useState<Feedback | null>(null);
+  const [deletingFeedback, setDeletingFeedback] = useState(false);
 
   const loadData = async () => {
     try {
@@ -54,6 +57,22 @@ export const FeedbackList: React.FC = () => {
     setFeedbackList((prev) =>
       prev.map((f) => (f.id === feedbackId ? { ...f, status: newStatus } : f))
     );
+  };
+
+  const confirmDeleteFeedback = async () => {
+    if (!feedbackToDelete) return;
+    setDeletingFeedback(true);
+    try {
+      const ok = await api.deleteFeedback(feedbackToDelete.id);
+      if (ok) {
+        setFeedbackList((prev) => prev.filter((f) => f.id !== feedbackToDelete.id));
+        setFeedbackToDelete(null);
+      }
+    } catch (err) {
+      console.error('Erreur lors de la suppression de l’avis:', err);
+    } finally {
+      setDeletingFeedback(false);
+    }
   };
 
   // Filtrage
@@ -327,10 +346,76 @@ export const FeedbackList: React.FC = () => {
                     <option value="resolved">Résolu (Resolved)</option>
                     <option value="archived">Archivé (Archived)</option>
                   </select>
+
+                  {/* Bouton Supprimer Avis */}
+                  <button
+                    type="button"
+                    onClick={() => setFeedbackToDelete(fb)}
+                    title="Supprimer définitivement cet avis"
+                    className="p-1.5 rounded-lg text-stone-400 hover:text-red-600 hover:bg-red-50 border border-transparent hover:border-red-200 transition-colors ml-0.5"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
                 </div>
               </div>
             </div>
           ))}
+        </div>
+      )}
+
+      {/* Modal Confirmation de Suppression d'un Avis */}
+      {feedbackToDelete && (
+        <div
+          className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-150"
+          onClick={() => setFeedbackToDelete(null)}
+        >
+          <div
+            className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-stone-200"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-10 h-10 rounded-2xl bg-red-100 text-red-600 flex items-center justify-center flex-shrink-0">
+                <Trash2 className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="font-serif font-bold text-lg text-stone-900 leading-tight">
+                  Supprimer cet avis ?
+                </h3>
+                <p className="text-xs text-stone-500">
+                  Cette action est définitive et irréversible.
+                </p>
+              </div>
+            </div>
+
+            <div className="p-3.5 rounded-2xl bg-stone-50 border border-stone-200 text-xs text-stone-700 space-y-1 mb-5">
+              <div className="font-bold text-stone-900">
+                {feedbackToDelete.customer_name || 'Client anonyme'} ({feedbackToDelete.rating} ⭐)
+              </div>
+              <p className="italic text-stone-600 line-clamp-3">
+                « {feedbackToDelete.comment} »
+              </p>
+            </div>
+
+            <div className="flex items-center justify-end gap-2.5">
+              <button
+                type="button"
+                onClick={() => setFeedbackToDelete(null)}
+                disabled={deletingFeedback}
+                className="px-4 py-2 rounded-xl text-xs font-semibold text-stone-600 hover:bg-stone-100"
+              >
+                Annuler
+              </button>
+              <button
+                type="button"
+                onClick={confirmDeleteFeedback}
+                disabled={deletingFeedback}
+                className="px-4 py-2 rounded-xl text-xs font-bold bg-red-600 hover:bg-red-700 text-white shadow-md transition-all active:scale-95 disabled:opacity-50 flex items-center gap-1.5"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>{deletingFeedback ? 'Suppression...' : 'Supprimer définitivement'}</span>
+              </button>
+            </div>
+          </div>
         </div>
       )}
 

@@ -6,7 +6,9 @@ interface HeaderProps {
   settings?: AppSettings;
 }
 
-export const Header: React.FC<HeaderProps> = () => {
+export const Header: React.FC<HeaderProps> = ({ settings }) => {
+  const currentLogo = settings?.logo_url || '/logo.png';
+
   return (
     <header className="w-full px-5 sm:px-8 pt-4 sm:pt-6 pb-2 flex items-center justify-between z-10">
       <Link
@@ -15,7 +17,7 @@ export const Header: React.FC<HeaderProps> = () => {
         aria-label="Chef Sébastien - Retour à l'accueil"
       >
         <img
-          src="/logo.png"
+          src={currentLogo}
           alt="Logo Chef Sébastien"
           className="h-10 sm:h-12 w-auto object-contain transition-transform group-hover:scale-[1.02]"
           onError={(e) => {

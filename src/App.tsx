@@ -25,9 +25,23 @@ import { SettingsPage } from './pages/admin/SettingsPage';
 
 // Layout pour la partie publique (Header + Footer)
 const PublicLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
+
+  useEffect(() => {
+    async function load() {
+      try {
+        const s = await api.getSettings();
+        setSettings(s);
+      } catch (err) {
+        console.warn('Erreur chargement paramètres:', err);
+      }
+    }
+    load();
+  }, []);
+
   return (
     <div className="bg-grain min-h-screen flex flex-col justify-between selection:bg-[#ffe3e5] selection:text-[#b8000f] text-[#1f1612]">
-      <Header />
+      <Header settings={settings} />
       <main className="flex-1 flex flex-col justify-center">{children}</main>
       <Footer />
     </div>

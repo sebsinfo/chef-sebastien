@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import {
   Lock,
@@ -11,6 +11,7 @@ import {
   Shield,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
+import { api } from '../../lib/supabase';
 
 export const AdminLogin: React.FC = () => {
   const navigate = useNavigate();
@@ -20,12 +21,25 @@ export const AdminLogin: React.FC = () => {
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [logoUrl, setLogoUrl] = useState<string>('/logo.png');
 
   // Modal mot de passe oublié
   const [showForgotModal, setShowForgotModal] = useState(false);
   const [forgotEmail, setForgotEmail] = useState('');
   const [forgotSent, setForgotSent] = useState(false);
   const [forgotLoading, setForgotLoading] = useState(false);
+
+  useEffect(() => {
+    async function loadLogo() {
+      try {
+        const s = await api.getSettings();
+        if (s.logo_url) {
+          setLogoUrl(s.logo_url);
+        }
+      } catch {}
+    }
+    loadLogo();
+  }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -77,9 +91,12 @@ export const AdminLogin: React.FC = () => {
         <div className="text-center mb-8">
           <Link to="/" className="inline-flex items-center justify-center mb-4 group" aria-label="Chef Sébastien - Accueil">
             <img
-              src="/logo.png"
+              src={logoUrl}
               alt="Logo Chef Sébastien"
               className="h-16 w-auto object-contain transition-transform group-hover:scale-105"
+              onError={(e) => {
+                e.currentTarget.src = '/logo.png';
+              }}
             />
           </Link>
           <h1 className="font-fraunces font-bold text-2xl sm:text-3xl text-[#faf4ea] tracking-tight">

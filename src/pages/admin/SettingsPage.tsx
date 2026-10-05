@@ -15,6 +15,8 @@ import {
   Copy,
   ExternalLink,
   ShieldCheck,
+  Upload,
+  RotateCcw,
 } from 'lucide-react';
 import { api, DEFAULT_SETTINGS } from '../../lib/supabase';
 import type { AppSettings, ServiceItem } from '../../types/database';
@@ -26,6 +28,10 @@ export const SettingsPage: React.FC = () => {
   const [savingSettings, setSavingSettings] = useState(false);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  // Logo upload
+  const [logoUploading, setLogoUploading] = useState(false);
+  const logoInputRef = useRef<HTMLInputElement>(null);
 
   // Nouvel ajout de service
   const [newServiceName, setNewServiceName] = useState('');
@@ -76,6 +82,49 @@ export const SettingsPage: React.FC = () => {
     } finally {
       setSavingSettings(false);
     }
+  };
+
+  // Sélectionner un logo par fichier image
+  const handleLogoFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (file.size > 5 * 1024 * 1024) {
+      setErrorMsg('Le logo ne doit pas dépasser 5 Mo.');
+      return;
+    }
+
+    setLogoUploading(true);
+    setErrorMsg(null);
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const img = new Image();
+      img.onload = () => {
+        // Redimensionner proprement à max 600px en préservant le PNG transparent
+        const canvas = document.createElement('canvas');
+        const MAX_WIDTH = 600;
+        let width = img.width;
+        let height = img.height;
+        if (width > MAX_WIDTH) {
+          height = Math.round((height * MAX_WIDTH) / width);
+          width = MAX_WIDTH;
+        }
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.drawImage(img, 0, 0, width, height);
+          const dataUrl = canvas.toDataURL('image/png');
+          setSettings((prev) => ({ ...prev, logo_url: dataUrl }));
+        } else {
+          setSettings((prev) => ({ ...prev, logo_url: event.target?.result as string }));
+        }
+        setLogoUploading(false);
+      };
+      img.src = event.target?.result as string;
+    };
+    reader.readAsDataURL(file);
   };
 
   // Gestion des services
@@ -178,36 +227,77 @@ export const SettingsPage: React.FC = () => {
               </h2>
             </div>
 
-            {/* Nom de l'entreprise & Logo */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div>
-                <label className="block text-xs font-bold text-stone-700 uppercase tracking-wider mb-1.5">
-                  Nom de l'établissement
-                </label>
-                <input
-                  type="text"
-                  value={settings.business_name}
-                  onChange={(e) =>
-                    setSettings({ ...settings, business_name: e.target.value })
-                  }
-                  required
-                  className="w-full px-3.5 py-2.5 rounded-xl border border-stone-300 text-sm focus:ring-2 focus:ring-amber-500 focus:outline-hidden"
-                />
-              </div>
+            {/* Nom de l'établissement */}
+            <div>
+              <label className="block text-xs font-bold text-stone-700 uppercase tracking-wider mb-1.5">
+                Nom de l'établissement
+              </label>
+              <input
+                type="text"
+                value={settings.business_name}
+                onChange={(e) =>
+                  setSettings({ ...settings, business_name: e.target.value })
+                }
+                required
+                className="w-full px-3.5 py-2.5 rounded-xl border border-stone-300 text-sm focus:ring-2 focus:ring-amber-500 focus:outline-hidden"
+              />
+            </div>
 
-              <div>
-                <label className="block text-xs font-bold text-stone-700 uppercase tracking-wider mb-1.5">
-                  URL du Logo <span className="text-stone-400 font-normal">(facultatif)</span>
-                </label>
-                <input
-                  type="url"
-                  placeholder="https://.../logo.png"
-                  value={settings.logo_url}
-                  onChange={(e) =>
-                    setSettings({ ...settings, logo_url: e.target.value })
-                  }
-                  className="w-full px-3.5 py-2.5 rounded-xl border border-stone-300 text-sm focus:ring-2 focus:ring-amber-500 focus:outline-hidden"
-                />
+            {/* Logo de l'établissement (Sélecteur d'image direct) */}
+            <div className="p-4 sm:p-5 rounded-2xl bg-[#faf4ea] border border-[#d9ccb6] space-y-3">
+              <label className="block text-xs font-bold text-[#1f1612] uppercase tracking-wider">
+                Logo de l'établissement
+              </label>
+
+              <div className="flex flex-col sm:flex-row sm:items-center gap-4">
+                {/* Boîte d'aperçu du logo */}
+                <div className="w-36 h-20 rounded-xl bg-white border border-[#d9ccb6] p-2 flex items-center justify-center flex-shrink-0 shadow-xs relative overflow-hidden">
+                  <img
+                    src={settings.logo_url || '/logo.png'}
+                    alt="Aperçu du logo"
+                    className="max-h-full max-w-full object-contain"
+                    onError={(e) => {
+                      e.currentTarget.src = '/logo.png';
+                    }}
+                  />
+                </div>
+
+                <div className="flex-1 space-y-2.5">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => logoInputRef.current?.click()}
+                      className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-[#ff0316] hover:bg-[#b8000f] text-[#faf4ea] text-xs font-bold shadow-xs transition-all active:scale-95 cursor-pointer"
+                    >
+                      <Upload className="w-4 h-4" />
+                      <span>{logoUploading ? 'Traitement...' : 'Choisir un nouveau logo'}</span>
+                    </button>
+
+                    {settings.logo_url && settings.logo_url !== '/logo.png' && (
+                      <button
+                        type="button"
+                        onClick={() => setSettings({ ...settings, logo_url: '' })}
+                        className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold text-stone-600 hover:text-stone-900 hover:bg-stone-200/60 transition-colors"
+                        title="Revenir au logo initial officiel"
+                      >
+                        <RotateCcw className="w-3.5 h-3.5" />
+                        <span>Logo par défaut</span>
+                      </button>
+                    )}
+                  </div>
+
+                  <p className="text-[11px] text-[#6b5b51] leading-relaxed">
+                    Formats acceptés : PNG transparent, JPG ou WebP (max 5 Mo). Le logo s'affichera immédiatement sur tout le site et l'espace de connexion.
+                  </p>
+
+                  <input
+                    ref={logoInputRef}
+                    type="file"
+                    accept="image/*"
+                    onChange={handleLogoFileChange}
+                    className="hidden"
+                  />
+                </div>
               </div>
             </div>
 

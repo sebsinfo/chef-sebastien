@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import type { User } from '@supabase/supabase-js';
-import { supabase } from '../lib/supabase';
+import { supabase, api } from '../lib/supabase';
 import type { Profile } from '../types/database';
 
 interface AuthContextType {
@@ -82,9 +82,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         if (session?.user && mounted) {
           setUser(session.user);
           await fetchUserProfile(session.user.id, session.user.email);
-        } else if (mounted) {
-          setUser(null);
-          setProfile(null);
+        } else {
+          // Vérifier session locale persistée
+          const localSession = api.getCurrentSession();
+          if (localSession?.user && localSession?.profile && mounted) {
+            setUser(localSession.user);
+            setProfile(localSession.profile);
+          } else if (mounted) {
+            setUser(null);
+            setProfile(null);
+          }
         }
       } catch (e) {
         console.error('Erreur initAuth:', e);
@@ -95,14 +102,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     initAuth();
 
-    // Écoute stricte des changements de session Supabase Auth
+    // Écoute des changements de session Supabase Auth
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, session) => {
       if (session?.user) {
         setUser(session.user);
         await fetchUserProfile(session.user.id, session.user.email);
       } else {
-        setUser(null);
-        setProfile(null);
+        const localSession = api.getCurrentSession();
+        if (localSession?.user && localSession?.profile) {
+          setUser(localSession.user);
+          setProfile(localSession.profile);
+        } else {
+          setUser(null);
+          setProfile(null);
+        }
       }
       setLoading(false);
     });
@@ -113,37 +126,65 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
   }, []);
 
-  // Authentification stricte via Supabase Auth uniquement
+  // Authentification pour tous les administrateurs (Supabase Auth + Registre d'équipe)
   const login = async (email: string, password: string): Promise<{ success: boolean; error?: string }> => {
+    const cleanEmail = email.trim().toLowerCase();
+    const cleanPassword = password.trim();
+
     try {
       setLoading(true);
-      const { data, error } = await supabase.auth.signInWithPassword({
-        email: email.trim().toLowerCase(),
-        password: password,
-      });
 
-      if (error) {
-        return { success: false, error: 'Identifiants invalides ou mot de passe incorrect.' };
+      // 1. Tenter la connexion Supabase Auth standard
+      try {
+        const { data, error } = await supabase.auth.signInWithPassword({
+          email: cleanEmail,
+          password: cleanPassword,
+        });
+
+        if (!error && data?.user) {
+          setUser(data.user);
+          const userProfile = await fetchUserProfile(data.user.id, data.user.email);
+
+          if (userProfile) {
+            setProfile(userProfile);
+            api.saveCurrentSession({ user: data.user, profile: userProfile });
+            return { success: true };
+          }
+        }
+      } catch (authErr) {
+        console.warn('Tentative Supabase Auth:', authErr);
       }
 
-      if (data.user) {
-        setUser(data.user);
-        const userProfile = await fetchUserProfile(data.user.id, data.user.email);
-
-        if (!userProfile) {
-          await supabase.auth.signOut();
-          setUser(null);
-          setProfile(null);
+      // 2. Authentification directe via le registre des administrateurs
+      const verified = api.authenticateAdmin(cleanEmail, cleanPassword);
+      if (verified) {
+        if (verified.status !== 'active') {
           return {
             success: false,
-            error: 'Accès refusé : Ce compte n’est pas autorisé à accéder au tableau de bord.',
+            error: 'Ce compte administrateur a été désactivé par la direction.',
           };
         }
 
+        const syntheticUser: any = {
+          id: verified.id,
+          email: verified.email,
+          aud: 'authenticated',
+          role: 'authenticated',
+          app_metadata: { provider: 'email' },
+          user_metadata: { full_name: verified.full_name, role: verified.role },
+          created_at: verified.created_at,
+        };
+
+        setUser(syntheticUser);
+        setProfile(verified);
+        api.saveCurrentSession({ user: syntheticUser, profile: verified });
         return { success: true };
       }
 
-      return { success: false, error: 'Connexion impossible.' };
+      return {
+        success: false,
+        error: 'Identifiants invalides ou mot de passe incorrect. Vérifiez votre adresse email et votre mot de passe.',
+      };
     } catch (err: any) {
       return { success: false, error: err.message || 'Une erreur de connexion est survenue.' };
     } finally {
@@ -155,6 +196,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     try {
       await supabase.auth.signOut();
     } catch {}
+    api.clearCurrentSession();
     setUser(null);
     setProfile(null);
   };

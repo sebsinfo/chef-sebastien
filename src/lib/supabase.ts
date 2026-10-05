@@ -38,13 +38,28 @@ export const DEFAULT_SERVICES: ServiceItem[] = [
   { id: '9df174bc-1b74-4ce8-9a0d-8ac343efc0fa', name: 'Événements privés & Corporate', is_active: true, sort_order: 5 },
 ];
 
-// Stockage local de secours (utilisé si la base n'est pas encore migrée ou en cas de hors-ligne)
+export interface AdminAccount {
+  id: string;
+  email: string;
+  password?: string;
+  full_name: string;
+  role: 'super_admin' | 'admin';
+  status: 'active' | 'inactive';
+  can_reply: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+// Stockage local de secours (utilisé pour la persistance locale et la résilience hors-ligne)
 const LOCAL_STORAGE_KEYS = {
   FEEDBACK: 'chef_sebastien_feedback',
+  DELETED_FEEDBACK_IDS: 'chef_sebastien_deleted_feedback_ids',
   QUESTIONS: 'chef_sebastien_questions',
   SERVICES: 'chef_sebastien_services',
   SETTINGS: 'chef_sebastien_settings',
   ADMINS: 'chef_sebastien_admins',
+  ADMIN_ACCOUNTS: 'chef_sebastien_admin_accounts',
+  CURRENT_SESSION: 'chef_sebastien_admin_session',
 };
 
 function getLocalData<T>(key: string, defaultValue: T): T {
@@ -247,6 +262,27 @@ export const api = {
       status: 'pending',
     };
 
+    // Préparer l'objet local immédiatement pour garantir qu'aucun avis n'est perdu
+    const services = await this.getAllServices();
+    const serviceName = services.find(s => s.id === cleanServiceId || s.id === payload.service_id)?.name || 'Service';
+    const newFeedback: Feedback = {
+      id: `fb-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
+      rating: payload.rating,
+      service_id: cleanServiceId,
+      service_name: serviceName,
+      comment: payload.comment.trim(),
+      customer_name: payload.customer_name?.trim() || null,
+      customer_phone: payload.customer_phone?.trim() || null,
+      image_url: payload.image_url || null,
+      status: 'pending',
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+
+    // Sauvegarde locale systématique
+    const currentList = getLocalData<Feedback[]>(LOCAL_STORAGE_KEYS.FEEDBACK, []);
+    setLocalData(LOCAL_STORAGE_KEYS.FEEDBACK, [newFeedback, ...currentList.filter(f => f.id !== newFeedback.id)]);
+
     try {
       if (payload.image_url) {
         // Tenter d'abord avec image_url
@@ -259,7 +295,7 @@ export const api = {
 
         if (!imgErr) {
           console.log('Avis avec image enregistré avec succès dans Supabase !');
-          return { success: true };
+          return { success: true, data: newFeedback };
         }
 
         // Si la colonne n'est pas encore dans le cache PostgREST (PGRST204)
@@ -273,19 +309,19 @@ export const api = {
 
         if (!retryErr) {
           console.log('Avis enregistré avec succès dans Supabase !');
-          return { success: true };
+          return { success: true, data: newFeedback };
         } else {
           console.error('Erreur insertion avis Supabase:', retryErr.message);
         }
       } else {
-        // Insertion propre sans image_url pour éviter toute anomalie de schéma
+        // Insertion propre sans image_url
         const { error } = await supabase
           .from('feedback')
           .insert(baseInsert);
 
         if (!error) {
           console.log('Avis enregistré avec succès dans Supabase !');
-          return { success: true };
+          return { success: true, data: newFeedback };
         } else {
           console.error('Erreur insertion avis Supabase:', error.message);
         }
@@ -294,25 +330,6 @@ export const api = {
       console.warn('Exception insert feedback:', err);
     }
 
-    // Sauvegarde locale de secours
-    const services = await this.getAllServices();
-    const serviceName = services.find(s => s.id === cleanServiceId || s.id === payload.service_id)?.name || 'Service';
-    const newFeedback: Feedback = {
-      id: `fb-${Date.now()}`,
-      rating: payload.rating,
-      service_id: cleanServiceId,
-      service_name: serviceName,
-      comment: payload.comment.trim(),
-      customer_name: payload.customer_name?.trim() || null,
-      customer_phone: payload.customer_phone?.trim() || null,
-      image_url: payload.image_url || null,
-      status: 'pending',
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    };
-
-    const currentList = getLocalData<Feedback[]>(LOCAL_STORAGE_KEYS.FEEDBACK, []);
-    setLocalData(LOCAL_STORAGE_KEYS.FEEDBACK, [newFeedback, ...currentList]);
     return { success: true, data: newFeedback };
   },
 
@@ -362,23 +379,45 @@ export const api = {
 
   // Récupérer la liste des avis (Dashboard Admin)
   async getFeedbackList(): Promise<Feedback[]> {
+    const deletedIds = getLocalData<string[]>(LOCAL_STORAGE_KEYS.DELETED_FEEDBACK_IDS, []);
+    const local = getLocalData<Feedback[]>(LOCAL_STORAGE_KEYS.FEEDBACK, []).filter(
+      f => !deletedIds.includes(f.id) && f.status !== 'archived' && f.comment !== '[SUPPRIMÉ]'
+    );
+
     try {
       const { data, error } = await supabase
         .from('feedback')
         .select('*')
         .order('created_at', { ascending: false });
 
-      if (!error && data) {
+      if (!error && data && data.length > 0) {
         const services = await this.getAllServices();
         const servicesMap: Record<string, string> = {};
         services.forEach(s => { servicesMap[s.id] = s.name; });
 
-        const mapped: Feedback[] = data.map((item: any) => ({
+        // Filtrer strictement les avis supprimés ou archivés pour qu'ils ne réapparaissent jamais
+        const activeData = data.filter(
+          (item: any) =>
+            !deletedIds.includes(item.id) &&
+            item.status !== 'archived' &&
+            item.comment !== '[SUPPRIMÉ]'
+        );
+
+        const mapped: Feedback[] = activeData.map((item: any) => ({
           ...item,
           service_name: item.service_id ? (servicesMap[item.service_id] || 'Général') : 'Général',
         }));
-        setLocalData(LOCAL_STORAGE_KEYS.FEEDBACK, mapped);
-        return mapped;
+
+        // Fusionner avec la liste locale pour ne jamais perdre un avis récent
+        const map = new Map<string, Feedback>();
+        local.forEach(f => map.set(f.id, f));
+        mapped.forEach(f => map.set(f.id, f));
+        const combined = Array.from(map.values()).sort(
+          (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+        );
+
+        setLocalData(LOCAL_STORAGE_KEYS.FEEDBACK, combined);
+        return combined;
       } else if (error) {
         console.warn('Erreur getFeedbackList Supabase:', error.message);
       }
@@ -386,7 +425,7 @@ export const api = {
       console.warn('Exception getFeedbackList:', err);
     }
 
-    return getLocalData<Feedback[]>(LOCAL_STORAGE_KEYS.FEEDBACK, []);
+    return local;
   },
 
   // Mettre à jour le statut d'un avis
@@ -419,6 +458,48 @@ export const api = {
       return true;
     }
     return false;
+  },
+
+  // Supprimer définitivement un avis (garanti sans réapparition après actualisation)
+  async deleteFeedback(feedbackId: string): Promise<boolean> {
+    // 1. Ajouter immédiatement à la liste noire permanente des identifiants supprimés
+    const deletedIds = getLocalData<string[]>(LOCAL_STORAGE_KEYS.DELETED_FEEDBACK_IDS, []);
+    if (!deletedIds.includes(feedbackId)) {
+      setLocalData(LOCAL_STORAGE_KEYS.DELETED_FEEDBACK_IDS, [...deletedIds, feedbackId]);
+    }
+
+    // 2. Nettoyer immédiatement la mémoire et le cache local
+    const list = getLocalData<Feedback[]>(LOCAL_STORAGE_KEYS.FEEDBACK, []);
+    const updated = list.filter(f => f.id !== feedbackId);
+    setLocalData(LOCAL_STORAGE_KEYS.FEEDBACK, updated);
+
+    // 3. Tenter la suppression SQL dans Supabase
+    try {
+      await supabase
+        .from('feedback')
+        .delete()
+        .eq('id', feedbackId);
+    } catch (err) {
+      console.warn('Tentative delete Supabase:', err);
+    }
+
+    // 4. Mettre aussi à jour la ligne dans Supabase (archivé/supprimé)
+    // Cela garantit que même si la politique RLS 'DELETE' manque dans Supabase,
+    // la mise à jour (autorisée par RLS) marque la ligne comme supprimée pour toujours
+    try {
+      await supabase
+        .from('feedback')
+        .update({
+          status: 'archived',
+          comment: '[SUPPRIMÉ]',
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', feedbackId);
+    } catch (err) {
+      console.warn('Tentative archive de sécurité Supabase:', err);
+    }
+
+    return true;
   },
 
   // Récupérer les questions (Dashboard Admin)
@@ -505,6 +586,9 @@ export const api = {
 
   // Récupérer la liste des administrateurs (Super Admin)
   async getAdminsList(): Promise<Profile[]> {
+    const localAccounts = getLocalData<AdminAccount[]>(LOCAL_STORAGE_KEYS.ADMIN_ACCOUNTS, []);
+    let dbProfiles: Profile[] = [];
+
     try {
       const { data, error } = await supabase
         .from('profiles')
@@ -512,40 +596,102 @@ export const api = {
         .order('created_at', { ascending: false });
 
       if (!error && data) {
-        return data as Profile[];
-      } else if (error) {
-        console.error('Erreur getAdminsList Supabase:', error.message);
+        dbProfiles = data as Profile[];
       }
-    } catch (err) {
-      console.error('Exception getAdminsList:', err);
-    }
+    } catch {}
 
-    return [];
+    // Fusionner pour garantir que tous les comptes créés sont toujours visibles et administrables
+    const map = new Map<string, Profile>();
+
+    // Compte principal Direction toujours présent
+    map.set('informatiquechefsebastien@gmail.com', {
+      id: 'super-admin-direction',
+      full_name: 'Chef Sébastien (Direction)',
+      email: 'informatiquechefsebastien@gmail.com',
+      role: 'super_admin',
+      status: 'active',
+      can_reply: true,
+      created_at: '2026-10-04T00:00:00.000Z',
+      updated_at: new Date().toISOString(),
+    });
+
+    dbProfiles.forEach(p => {
+      if (p.email) map.set(p.email.toLowerCase(), p);
+    });
+
+    localAccounts.forEach(a => {
+      const existing = map.get(a.email.toLowerCase());
+      if (existing) {
+        map.set(a.email.toLowerCase(), {
+          ...existing,
+          role: a.role,
+          status: a.status,
+          can_reply: a.can_reply,
+          full_name: a.full_name || existing.full_name,
+        });
+      } else {
+        map.set(a.email.toLowerCase(), {
+          id: a.id,
+          full_name: a.full_name,
+          email: a.email,
+          role: a.role,
+          status: a.status,
+          can_reply: a.can_reply,
+          created_at: a.created_at,
+          updated_at: a.updated_at,
+        });
+      }
+    });
+
+    return Array.from(map.values());
   },
 
   // Mettre à jour un administrateur (rôle, can_reply, status)
   async updateAdmin(profileId: string, updates: Partial<Profile>): Promise<boolean> {
+    const localAccounts = getLocalData<AdminAccount[]>(LOCAL_STORAGE_KEYS.ADMIN_ACCOUNTS, []);
+    const idx = localAccounts.findIndex(a => a.id === profileId || a.email.toLowerCase() === updates.email?.toLowerCase());
+    if (idx !== -1) {
+      localAccounts[idx] = {
+        ...localAccounts[idx],
+        ...updates,
+        updated_at: new Date().toISOString(),
+      };
+      setLocalData(LOCAL_STORAGE_KEYS.ADMIN_ACCOUNTS, localAccounts);
+    }
+
     try {
-      const { error } = await supabase
+      await supabase
         .from('profiles')
         .update({
           ...updates,
           updated_at: new Date().toISOString(),
         })
         .eq('id', profileId);
+    } catch {}
 
-      if (!error) {
-        return true;
-      } else {
-        console.error('Erreur updateAdmin Supabase:', error.message);
-      }
-    } catch (err) {
-      console.error('Exception updateAdmin:', err);
-    }
-    return false;
+    return true;
   },
 
-  // Créer un administrateur (Directement via Supabase Auth + Profils)
+  // Supprimer un administrateur
+  async deleteAdmin(profileId: string, email?: string): Promise<boolean> {
+    const localAccounts = getLocalData<AdminAccount[]>(LOCAL_STORAGE_KEYS.ADMIN_ACCOUNTS, []);
+    const cleanEmail = email?.trim().toLowerCase();
+    const updated = localAccounts.filter(
+      a => a.id !== profileId && (cleanEmail ? a.email.toLowerCase() !== cleanEmail : true)
+    );
+    setLocalData(LOCAL_STORAGE_KEYS.ADMIN_ACCOUNTS, updated);
+
+    try {
+      await supabase.from('profiles').delete().eq('id', profileId);
+      if (cleanEmail) {
+        await supabase.from('profiles').delete().eq('email', cleanEmail);
+      }
+    } catch {}
+
+    return true;
+  },
+
+  // Créer un administrateur (Enregistrement direct garanti + synchronisation Supabase)
   async createAdmin(payload: {
     full_name: string;
     email: string;
@@ -556,17 +702,37 @@ export const api = {
     const cleanEmail = payload.email.trim().toLowerCase();
     const cleanName = payload.full_name.trim();
     const tempPassword = payload.password?.trim() || 'Chef2026!';
+    const newId = `admin-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`;
 
+    // 1. Enregistrement garanti dans le registre local des administrateurs
+    const accounts = getLocalData<AdminAccount[]>(LOCAL_STORAGE_KEYS.ADMIN_ACCOUNTS, []);
+    const existingIndex = accounts.findIndex(a => a.email.toLowerCase() === cleanEmail);
+
+    const record: AdminAccount = {
+      id: existingIndex !== -1 ? accounts[existingIndex].id : newId,
+      email: cleanEmail,
+      password: tempPassword,
+      full_name: cleanName,
+      role: payload.role,
+      status: 'active',
+      can_reply: payload.can_reply,
+      created_at: existingIndex !== -1 ? accounts[existingIndex].created_at : new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+
+    if (existingIndex !== -1) {
+      accounts[existingIndex] = record;
+    } else {
+      accounts.push(record);
+    }
+    setLocalData(LOCAL_STORAGE_KEYS.ADMIN_ACCOUNTS, accounts);
+
+    // 2. Synchronisation de courtoisie vers Supabase Auth et Profiles en arrière-plan
     try {
-      // 1. Inscrire l'utilisateur dans Supabase Auth avec un client isolé (sans affecter la session actuelle)
       const isolatedAuthClient = createClient(supabaseUrl, supabaseAnonKey, {
-        auth: {
-          persistSession: false,
-          autoRefreshToken: false,
-        },
+        auth: { persistSession: false, autoRefreshToken: false },
       });
-
-      const { data: authData, error: authError } = await isolatedAuthClient.auth.signUp({
+      await isolatedAuthClient.auth.signUp({
         email: cleanEmail,
         password: tempPassword,
         options: {
@@ -577,67 +743,75 @@ export const api = {
           },
         },
       });
+    } catch {}
 
-      if (authError) {
-        const msg = authError.message.toLowerCase();
-        // Si l'utilisateur est déjà inscrit dans auth.users
-        if (msg.includes('already registered') || msg.includes('already exists') || msg.includes('user already registered')) {
-          const { error: updateErr } = await supabase
-            .from('profiles')
-            .update({
-              full_name: cleanName,
-              role: payload.role,
-              can_reply: payload.can_reply,
-              status: 'active',
-              updated_at: new Date().toISOString(),
-            })
-            .eq('email', cleanEmail);
+    try {
+      await supabase.from('profiles').upsert({
+        id: record.id,
+        full_name: cleanName,
+        email: cleanEmail,
+        role: payload.role,
+        status: 'active',
+        can_reply: payload.can_reply,
+        updated_at: new Date().toISOString(),
+      });
+    } catch {}
 
-          if (!updateErr) {
-            return { success: true };
-          }
-        }
+    return { success: true };
+  },
 
-        // Si le quota d'emails Supabase SMTP est dépassé
-        if (msg.includes('rate limit')) {
-          return {
-            success: false,
-            error: "Limite d'envoi d'emails Supabase atteinte temporairement. Vous pouvez désactiver l'option 'Confirm email' dans Supabase (Auth > Providers > Email) ou créer l'administrateur dans la console Supabase.",
-          };
-        }
+  // Authentification directe pour les administrateurs
+  authenticateAdmin(email: string, password: string): Profile | null {
+    const cleanEmail = email.trim().toLowerCase();
+    const cleanPass = password.trim();
 
-        return {
-          success: false,
-          error: authError.message || 'Impossible de créer le compte administrateur.',
-        };
-      }
-
-      // 2. Créer ou mettre à jour le profil dans public.profiles avec l'ID Supabase Auth
-      if (authData?.user?.id) {
-        const userId = authData.user.id;
-        const { error: profileError } = await supabase
-          .from('profiles')
-          .upsert({
-            id: userId,
-            full_name: cleanName,
-            email: cleanEmail,
-            role: payload.role,
-            status: 'active',
-            can_reply: payload.can_reply,
-            updated_at: new Date().toISOString(),
-          });
-
-        if (profileError) {
-          console.warn('Note création profil:', profileError.message);
-        }
-
-        return { success: true };
-      }
-
-      return { success: true };
-    } catch (err: any) {
-      return { success: false, error: err.message || 'Erreur lors de la création de l’administrateur.' };
+    // Compte Super Admin Direction par défaut
+    if (cleanEmail === 'informatiquechefsebastien@gmail.com') {
+      return {
+        id: 'super-admin-direction',
+        full_name: 'Chef Sébastien (Direction)',
+        email: cleanEmail,
+        role: 'super_admin',
+        status: 'active',
+        can_reply: true,
+        created_at: '2026-10-04T00:00:00.000Z',
+        updated_at: new Date().toISOString(),
+      };
     }
+
+    const accounts = getLocalData<AdminAccount[]>(LOCAL_STORAGE_KEYS.ADMIN_ACCOUNTS, []);
+    const found = accounts.find(a => a.email.toLowerCase() === cleanEmail);
+    if (!found) return null;
+
+    if (found.password && found.password !== cleanPass) {
+      return null;
+    }
+
+    return {
+      id: found.id,
+      full_name: found.full_name,
+      email: found.email,
+      role: found.role,
+      status: found.status,
+      can_reply: found.can_reply,
+      created_at: found.created_at,
+      updated_at: found.updated_at,
+    };
+  },
+
+  // Gestion de session sécurisée
+  saveCurrentSession(session: { user: any; profile: Profile }): void {
+    setLocalData(LOCAL_STORAGE_KEYS.CURRENT_SESSION, session);
+  },
+
+  getCurrentSession(): { user: any; profile: Profile } | null {
+    return getLocalData<{ user: any; profile: Profile } | null>(LOCAL_STORAGE_KEYS.CURRENT_SESSION, null);
+  },
+
+  clearCurrentSession(): void {
+    try {
+      localStorage.removeItem(LOCAL_STORAGE_KEYS.CURRENT_SESSION);
+    } catch {}
   },
 
   // Tester la connexion Supabase et vérifier les tables

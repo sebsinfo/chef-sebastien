@@ -261,6 +261,13 @@ CREATE POLICY "Active admins can update feedback status"
   USING (public.is_active_admin())
   WITH CHECK (public.is_active_admin());
 
+-- Les admins actifs peuvent SUPPRIMER un avis
+CREATE POLICY "Active admins can delete feedback"
+  ON public.feedback
+  FOR DELETE
+  TO authenticated
+  USING (public.is_active_admin());
+
 -- --- RLS : QUESTIONS ---
 -- Tout le monde (public anon) peut POSER une question (INSERT uniquement)
 CREATE POLICY "Public can submit questions"
@@ -387,6 +394,96 @@ FROM auth.users
 WHERE lower(email) = 'informatiquechefsebastien@gmail.com'
 ON CONFLICT (id) DO UPDATE
 SET role = 'super_admin', status = 'active', can_reply = true;
+
+-- ==============================================================================
+-- 7. CRÉATION DIRECTE D'ADMINISTRATEURS SANS ENVOI D'EMAIL (ANTI-RATE LIMIT)
+-- ==============================================================================
+CREATE OR REPLACE FUNCTION public.create_admin_user(
+  admin_email TEXT,
+  admin_password TEXT,
+  admin_name TEXT,
+  admin_role TEXT DEFAULT 'admin',
+  admin_can_reply BOOLEAN DEFAULT true
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, auth, extensions
+AS $$
+DECLARE
+  new_user_id UUID := gen_random_uuid();
+  clean_email TEXT := lower(trim(admin_email));
+  existing_id UUID;
+BEGIN
+  -- Seul un Super Admin peut appeler cette fonction
+  IF NOT public.is_super_admin() THEN
+    RETURN jsonb_build_object('success', false, 'error', 'Permission refusée. Seul un Super Admin actif peut créer un administrateur.');
+  END IF;
+
+  -- Vérifier si l'utilisateur existe déjà dans auth.users
+  SELECT id INTO existing_id FROM auth.users WHERE lower(email) = clean_email;
+
+  IF existing_id IS NOT NULL THEN
+    -- Mettre à jour son mot de passe et son profil sans envoyer d'email
+    UPDATE auth.users
+    SET encrypted_password = crypt(admin_password, gen_salt('bf')),
+        email_confirmed_at = COALESCE(email_confirmed_at, now()),
+        raw_user_meta_data = jsonb_build_object('full_name', admin_name, 'role', admin_role, 'can_reply', admin_can_reply),
+        updated_at = now()
+    WHERE id = existing_id;
+
+    INSERT INTO public.profiles (id, full_name, email, role, status, can_reply)
+    VALUES (existing_id, admin_name, clean_email, admin_role, 'active', admin_can_reply)
+    ON CONFLICT (id) DO UPDATE
+    SET full_name = EXCLUDED.full_name,
+        role = EXCLUDED.role,
+        can_reply = EXCLUDED.can_reply,
+        status = 'active';
+
+    RETURN jsonb_build_object('success', true, 'user_id', existing_id, 'updated', true);
+  END IF;
+
+  -- Créer directement le compte pré-confirmé dans auth.users (zéro email envoyé, zéro rate limit !)
+  INSERT INTO auth.users (
+    id,
+    instance_id,
+    email,
+    encrypted_password,
+    email_confirmed_at,
+    raw_app_meta_data,
+    raw_user_meta_data,
+    created_at,
+    updated_at,
+    role,
+    aud,
+    confirmation_token
+  ) VALUES (
+    new_user_id,
+    '00000000-0000-0000-0000-000000000000',
+    clean_email,
+    crypt(admin_password, gen_salt('bf')),
+    now(),
+    jsonb_build_object('provider', 'email', 'providers', array['email']),
+    jsonb_build_object('full_name', admin_name, 'role', admin_role, 'can_reply', admin_can_reply),
+    now(),
+    now(),
+    'authenticated',
+    'authenticated',
+    ''
+  );
+
+  -- Créer le profil associé
+  INSERT INTO public.profiles (id, full_name, email, role, status, can_reply)
+  VALUES (new_user_id, admin_name, clean_email, admin_role, 'active', admin_can_reply)
+  ON CONFLICT (id) DO UPDATE
+  SET full_name = EXCLUDED.full_name,
+      role = EXCLUDED.role,
+      can_reply = EXCLUDED.can_reply,
+      status = 'active';
+
+  RETURN jsonb_build_object('success', true, 'user_id', new_user_id);
+END;
+$$;
 
 -- Forcer le rechargement immédiat du cache de schéma PostgREST dans Supabase
 NOTIFY pgrst, 'reload schema';

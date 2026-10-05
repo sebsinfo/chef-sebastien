@@ -12,6 +12,7 @@ import {
   ShieldAlert,
   Edit2,
   X,
+  Trash2,
 } from 'lucide-react';
 import { api } from '../../lib/supabase';
 import { useAuth } from '../../context/AuthContext';
@@ -39,6 +40,10 @@ export const AdminsList: React.FC = () => {
   const [editCanReply, setEditCanReply] = useState(false);
   const [editStatus, setEditStatus] = useState<UserStatus>('active');
   const [submittingEdit, setSubmittingEdit] = useState(false);
+
+  // Modal de suppression d'administrateur
+  const [adminToDelete, setAdminToDelete] = useState<Profile | null>(null);
+  const [deletingAdmin, setDeletingAdmin] = useState(false);
 
   const loadAdmins = async () => {
     try {
@@ -173,6 +178,36 @@ export const AdminsList: React.FC = () => {
         text: `Permission de réponse mise à jour pour ${admin.full_name}.`,
       });
       loadAdmins();
+    }
+  };
+
+  // Supprimer un administrateur
+  const handleDeleteAdmin = (admin: Profile) => {
+    if (admin.id === currentProfile?.id || admin.role === 'super_admin') {
+      setFeedbackMsg({ type: 'error', text: 'Impossible de supprimer un compte Super Admin.' });
+      return;
+    }
+    setAdminToDelete(admin);
+  };
+
+  const confirmDeleteAdmin = async () => {
+    if (!adminToDelete) return;
+    setDeletingAdmin(true);
+    try {
+      await api.deleteAdmin(adminToDelete.id, adminToDelete.email);
+      setAdmins(prev =>
+        prev.filter(
+          a =>
+            a.id !== adminToDelete.id &&
+            (a.email && adminToDelete.email ? a.email.toLowerCase() !== adminToDelete.email.toLowerCase() : true)
+        )
+      );
+      setFeedbackMsg({ type: 'success', text: `Compte de ${adminToDelete.full_name} supprimé avec succès.` });
+      setAdminToDelete(null);
+    } catch (err: any) {
+      setFeedbackMsg({ type: 'error', text: err.message || 'Erreur lors de la suppression.' });
+    } finally {
+      setDeletingAdmin(false);
     }
   };
 
@@ -365,6 +400,18 @@ export const AdminsList: React.FC = () => {
                         }`}
                       >
                         {isActive ? 'Désactiver' : 'Réactiver'}
+                      </button>
+                    )}
+
+                    {/* Supprimer le compte */}
+                    {!isCurrent && !isSuper && (
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteAdmin(adm)}
+                        className="p-2 rounded-xl text-stone-400 hover:text-red-600 hover:bg-red-50 border border-stone-200 hover:border-red-200 transition-colors"
+                        title="Supprimer ce collaborateur"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
                       </button>
                     )}
                   </div>
@@ -590,6 +637,61 @@ export const AdminsList: React.FC = () => {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Confirmation Suppression Administrateur */}
+      {adminToDelete && (
+        <div
+          className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-150"
+          onClick={() => setAdminToDelete(null)}
+        >
+          <div
+            className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-stone-200"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-10 h-10 rounded-2xl bg-red-100 text-red-600 flex items-center justify-center flex-shrink-0">
+                <Trash2 className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="font-serif font-bold text-lg text-stone-900 leading-tight">
+                  Supprimer ce collaborateur ?
+                </h3>
+                <p className="text-xs text-stone-500">
+                  L'accès de cet administrateur sera immédiatement révoqué.
+                </p>
+              </div>
+            </div>
+
+            <div className="p-3.5 rounded-2xl bg-stone-50 border border-stone-200 text-xs text-stone-700 space-y-1 mb-5">
+              <div className="font-bold text-stone-900">{adminToDelete.full_name}</div>
+              <div className="text-stone-500">{adminToDelete.email}</div>
+              <div className="text-[11px] text-amber-800 font-medium">
+                Rôle : {adminToDelete.role === 'super_admin' ? 'Super Admin' : 'Admin'}
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2.5">
+              <button
+                type="button"
+                onClick={() => setAdminToDelete(null)}
+                disabled={deletingAdmin}
+                className="px-4 py-2 rounded-xl text-xs font-semibold text-stone-600 hover:bg-stone-100"
+              >
+                Annuler
+              </button>
+              <button
+                type="button"
+                onClick={confirmDeleteAdmin}
+                disabled={deletingAdmin}
+                className="px-4 py-2 rounded-xl text-xs font-bold bg-red-600 hover:bg-red-700 text-white shadow-md transition-all active:scale-95 disabled:opacity-50 flex items-center gap-1.5 cursor-pointer"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>{deletingAdmin ? 'Suppression...' : 'Supprimer définitivement'}</span>
+              </button>
+            </div>
           </div>
         </div>
       )}
