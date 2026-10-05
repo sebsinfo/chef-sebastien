@@ -1,0 +1,6 @@
+{
+  "name": "Chef Sébastien - Relation Client & Avis",
+  "description": "Plateforme mobile-first de recueil d'avis, questions et relation client via WhatsApp pour Chef Sébastien (restaurant & traiteur, Port-au-Prince).",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
