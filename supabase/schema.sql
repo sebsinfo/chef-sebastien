@@ -336,23 +336,40 @@ VALUES
 ON CONFLICT DO NOTHING;
 
 -- ==============================================================================
--- 6. SYNCHRONISATION AUTOMATIQUE DU SUPER ADMIN
+-- 6. SYNCHRONISATION AUTOMATIQUE DES COMPTES & PROFILS
 -- ==============================================================================
 
--- Fonction et trigger pour synchroniser automatiquement le compte Super Admin
+-- Fonction et trigger pour synchroniser automatiquement les profils administrateurs
 CREATE OR REPLACE FUNCTION public.handle_new_user_profile()
 RETURNS TRIGGER
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = public
 AS $$
+DECLARE
+  assigned_role TEXT;
+  assigned_can_reply BOOLEAN;
+  assigned_name TEXT;
 BEGIN
-  IF NEW.email = 'informatiquechefsebastien@gmail.com' THEN
-    INSERT INTO public.profiles (id, full_name, email, role, status, can_reply)
-    VALUES (NEW.id, 'Chef Sébastien (Direction)', NEW.email, 'super_admin', 'active', true)
-    ON CONFLICT (id) DO UPDATE
-    SET role = 'super_admin', status = 'active', can_reply = true;
+  -- Déterminer le rôle
+  IF lower(NEW.email) = 'informatiquechefsebastien@gmail.com' THEN
+    assigned_role := 'super_admin';
+    assigned_can_reply := true;
+    assigned_name := 'Chef Sébastien (Direction)';
+  ELSE
+    assigned_role := COALESCE(NEW.raw_user_meta_data->>'role', 'admin');
+    assigned_can_reply := COALESCE((NEW.raw_user_meta_data->>'can_reply')::boolean, true);
+    assigned_name := COALESCE(NEW.raw_user_meta_data->>'full_name', split_part(NEW.email, '@', 1));
   END IF;
+
+  INSERT INTO public.profiles (id, full_name, email, role, status, can_reply)
+  VALUES (NEW.id, assigned_name, lower(NEW.email), assigned_role, 'active', assigned_can_reply)
+  ON CONFLICT (id) DO UPDATE
+  SET full_name = CASE WHEN profiles.full_name IS NOT NULL AND profiles.full_name <> '' THEN profiles.full_name ELSE EXCLUDED.full_name END,
+      role = CASE WHEN lower(NEW.email) = 'informatiquechefsebastien@gmail.com' THEN 'super_admin' ELSE EXCLUDED.role END,
+      status = 'active',
+      can_reply = EXCLUDED.can_reply;
+
   RETURN NEW;
 END;
 $$;
@@ -370,4 +387,7 @@ FROM auth.users
 WHERE lower(email) = 'informatiquechefsebastien@gmail.com'
 ON CONFLICT (id) DO UPDATE
 SET role = 'super_admin', status = 'active', can_reply = true;
+
+-- Forcer le rechargement immédiat du cache de schéma PostgREST dans Supabase
+NOTIFY pgrst, 'reload schema';
 -- ==============================================================================

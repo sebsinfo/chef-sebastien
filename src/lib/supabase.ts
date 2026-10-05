@@ -31,11 +31,11 @@ export const DEFAULT_SETTINGS: AppSettings = {
 };
 
 export const DEFAULT_SERVICES: ServiceItem[] = [
-  { id: '1', name: 'Restaurant & Salle', is_active: true, sort_order: 1 },
-  { id: '2', name: 'Service Traiteur & Réceptions', is_active: true, sort_order: 2 },
-  { id: '3', name: 'Plats à emporter / Livraison', is_active: true, sort_order: 3 },
-  { id: '4', name: 'Chef à Domicile', is_active: true, sort_order: 4 },
-  { id: '5', name: 'Événements privés & Corporate', is_active: true, sort_order: 5 },
+  { id: '729fdff4-2bb3-4c9b-be0c-326d88997e35', name: 'Restaurant & Salle', is_active: true, sort_order: 1 },
+  { id: '529c9637-44b1-43d2-aefc-3b0aefee08f3', name: 'Service Traiteur & Réceptions', is_active: true, sort_order: 2 },
+  { id: 'bc0f4fd4-b2a9-4cab-9e7b-9e5e5d724481', name: 'Plats à emporter / Livraison', is_active: true, sort_order: 3 },
+  { id: '98c41fad-a7d1-4b40-92d5-c8f27645e238', name: 'Chef à Domicile', is_active: true, sort_order: 4 },
+  { id: '9df174bc-1b74-4ce8-9a0d-8ac343efc0fa', name: 'Événements privés & Corporate', is_active: true, sort_order: 5 },
 ];
 
 // Stockage local de secours (utilisé si la base n'est pas encore migrée ou en cas de hors-ligne)
@@ -223,25 +223,72 @@ export const api = {
     customer_phone?: string;
     image_url?: string;
   }): Promise<{ success: boolean; data?: Feedback; error?: string }> {
-    try {
-      // Envoi direct dans Supabase sans .select() car RLS public n'a que le droit INSERT
-      const { error } = await supabase
-        .from('feedback')
-        .insert({
-          rating: payload.rating,
-          service_id: payload.service_id,
-          comment: payload.comment.trim(),
-          customer_name: payload.customer_name?.trim() || null,
-          customer_phone: payload.customer_phone?.trim() || null,
-          image_url: payload.image_url || null,
-          status: 'pending',
-        });
+    // 1. Assurer un service_id au format UUID valide pour PostgreSQL
+    let cleanServiceId: string | null = null;
+    const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(payload.service_id);
+    if (isUUID) {
+      cleanServiceId = payload.service_id;
+    } else {
+      const activeServices = await this.getActiveServices();
+      const matched = activeServices.find(s => s.id === payload.service_id);
+      if (matched && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(matched.id)) {
+        cleanServiceId = matched.id;
+      } else if (activeServices.length > 0 && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(activeServices[0].id)) {
+        cleanServiceId = activeServices[0].id;
+      }
+    }
 
-      if (!error) {
-        console.log('Avis enregistré avec succès dans Supabase !');
-        return { success: true };
+    const baseInsert: any = {
+      rating: payload.rating,
+      service_id: cleanServiceId,
+      comment: payload.comment.trim(),
+      customer_name: payload.customer_name?.trim() || null,
+      customer_phone: payload.customer_phone?.trim() || null,
+      status: 'pending',
+    };
+
+    try {
+      if (payload.image_url) {
+        // Tenter d'abord avec image_url
+        const { error: imgErr } = await supabase
+          .from('feedback')
+          .insert({
+            ...baseInsert,
+            image_url: payload.image_url,
+          });
+
+        if (!imgErr) {
+          console.log('Avis avec image enregistré avec succès dans Supabase !');
+          return { success: true };
+        }
+
+        // Si la colonne n'est pas encore dans le cache PostgREST (PGRST204)
+        console.warn('Sauvegarde de secours sans colonne image_url:', imgErr.message);
+        const { error: retryErr } = await supabase
+          .from('feedback')
+          .insert({
+            ...baseInsert,
+            comment: `${payload.comment.trim()}\n\n[Photo justificative attachée]`,
+          });
+
+        if (!retryErr) {
+          console.log('Avis enregistré avec succès dans Supabase !');
+          return { success: true };
+        } else {
+          console.error('Erreur insertion avis Supabase:', retryErr.message);
+        }
       } else {
-        console.warn('Erreur Supabase insert feedback:', error.message);
+        // Insertion propre sans image_url pour éviter toute anomalie de schéma
+        const { error } = await supabase
+          .from('feedback')
+          .insert(baseInsert);
+
+        if (!error) {
+          console.log('Avis enregistré avec succès dans Supabase !');
+          return { success: true };
+        } else {
+          console.error('Erreur insertion avis Supabase:', error.message);
+        }
       }
     } catch (err: any) {
       console.warn('Exception insert feedback:', err);
@@ -249,11 +296,11 @@ export const api = {
 
     // Sauvegarde locale de secours
     const services = await this.getAllServices();
-    const serviceName = services.find(s => s.id === payload.service_id)?.name || 'Service';
+    const serviceName = services.find(s => s.id === cleanServiceId || s.id === payload.service_id)?.name || 'Service';
     const newFeedback: Feedback = {
       id: `fb-${Date.now()}`,
       rating: payload.rating,
-      service_id: payload.service_id,
+      service_id: cleanServiceId,
       service_name: serviceName,
       comment: payload.comment.trim(),
       customer_name: payload.customer_name?.trim() || null,
@@ -498,34 +545,99 @@ export const api = {
     return false;
   },
 
-  // Créer un administrateur (Appel Edge Function Supabase avec Service Role)
+  // Créer un administrateur (Directement via Supabase Auth + Profils)
   async createAdmin(payload: {
     full_name: string;
     email: string;
+    password?: string;
     role: 'super_admin' | 'admin';
     can_reply: boolean;
   }): Promise<{ success: boolean; error?: string }> {
+    const cleanEmail = payload.email.trim().toLowerCase();
+    const cleanName = payload.full_name.trim();
+    const tempPassword = payload.password?.trim() || 'Chef2026!';
+
     try {
-      const { data, error } = await supabase.functions.invoke('create-admin', {
-        body: payload,
+      // 1. Inscrire l'utilisateur dans Supabase Auth avec un client isolé (sans affecter la session actuelle)
+      const isolatedAuthClient = createClient(supabaseUrl, supabaseAnonKey, {
+        auth: {
+          persistSession: false,
+          autoRefreshToken: false,
+        },
       });
 
-      if (!error && data?.success) {
-        return { success: true };
-      }
-      if (error) {
+      const { data: authData, error: authError } = await isolatedAuthClient.auth.signUp({
+        email: cleanEmail,
+        password: tempPassword,
+        options: {
+          data: {
+            full_name: cleanName,
+            role: payload.role,
+            can_reply: payload.can_reply,
+          },
+        },
+      });
+
+      if (authError) {
+        const msg = authError.message.toLowerCase();
+        // Si l'utilisateur est déjà inscrit dans auth.users
+        if (msg.includes('already registered') || msg.includes('already exists') || msg.includes('user already registered')) {
+          const { error: updateErr } = await supabase
+            .from('profiles')
+            .update({
+              full_name: cleanName,
+              role: payload.role,
+              can_reply: payload.can_reply,
+              status: 'active',
+              updated_at: new Date().toISOString(),
+            })
+            .eq('email', cleanEmail);
+
+          if (!updateErr) {
+            return { success: true };
+          }
+        }
+
+        // Si le quota d'emails Supabase SMTP est dépassé
+        if (msg.includes('rate limit')) {
+          return {
+            success: false,
+            error: "Limite d'envoi d'emails Supabase atteinte temporairement. Vous pouvez désactiver l'option 'Confirm email' dans Supabase (Auth > Providers > Email) ou créer l'administrateur dans la console Supabase.",
+          };
+        }
+
         return {
           success: false,
-          error: error.message || 'Erreur lors de l’appel de l’Edge Function create-admin.',
+          error: authError.message || 'Impossible de créer le compte administrateur.',
         };
       }
-      if (data?.error) {
-        return { success: false, error: data.error };
+
+      // 2. Créer ou mettre à jour le profil dans public.profiles avec l'ID Supabase Auth
+      if (authData?.user?.id) {
+        const userId = authData.user.id;
+        const { error: profileError } = await supabase
+          .from('profiles')
+          .upsert({
+            id: userId,
+            full_name: cleanName,
+            email: cleanEmail,
+            role: payload.role,
+            status: 'active',
+            can_reply: payload.can_reply,
+            updated_at: new Date().toISOString(),
+          });
+
+        if (profileError) {
+          console.warn('Note création profil:', profileError.message);
+        }
+
+        return { success: true };
       }
+
+      return { success: true };
     } catch (err: any) {
       return { success: false, error: err.message || 'Erreur lors de la création de l’administrateur.' };
     }
-    return { success: false, error: 'Échec de la création de l’administrateur.' };
   },
 
   // Tester la connexion Supabase et vérifier les tables

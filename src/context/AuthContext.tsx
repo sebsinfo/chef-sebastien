@@ -24,15 +24,31 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [loading, setLoading] = useState(true);
 
   // Charger le profil de l'utilisateur connecté depuis la table profiles de Supabase
-  const fetchUserProfile = async (userId: string): Promise<Profile | null> => {
+  const fetchUserProfile = async (userId: string, userEmail?: string | null): Promise<Profile | null> => {
     try {
-      const { data, error } = await supabase
+      let { data, error } = await supabase
         .from('profiles')
         .select('*')
         .eq('id', userId)
         .maybeSingle();
 
-      if (error) {
+      // Si le profil n'est pas trouvé par ID mais qu'on a l'email, chercher par email
+      if (!data && userEmail) {
+        const { data: byEmail } = await supabase
+          .from('profiles')
+          .select('*')
+          .eq('email', userEmail.trim().toLowerCase())
+          .maybeSingle();
+
+        if (byEmail) {
+          try {
+            await supabase.from('profiles').update({ id: userId }).eq('email', userEmail.trim().toLowerCase());
+          } catch {}
+          data = { ...byEmail, id: userId };
+        }
+      }
+
+      if (error && !data) {
         console.error('Erreur récupération profil Supabase:', error.message);
         return null;
       }
@@ -65,7 +81,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         const { data: { session } } = await supabase.auth.getSession();
         if (session?.user && mounted) {
           setUser(session.user);
-          await fetchUserProfile(session.user.id);
+          await fetchUserProfile(session.user.id, session.user.email);
         } else if (mounted) {
           setUser(null);
           setProfile(null);
@@ -83,7 +99,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, session) => {
       if (session?.user) {
         setUser(session.user);
-        await fetchUserProfile(session.user.id);
+        await fetchUserProfile(session.user.id, session.user.email);
       } else {
         setUser(null);
         setProfile(null);
@@ -112,7 +128,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       if (data.user) {
         setUser(data.user);
-        const userProfile = await fetchUserProfile(data.user.id);
+        const userProfile = await fetchUserProfile(data.user.id, data.user.email);
 
         if (!userProfile) {
           await supabase.auth.signOut();

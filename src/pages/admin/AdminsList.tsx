@@ -27,6 +27,7 @@ export const AdminsList: React.FC = () => {
   const [showAddModal, setShowAddModal] = useState(false);
   const [addFullName, setAddFullName] = useState('');
   const [addEmail, setAddEmail] = useState('');
+  const [addPassword, setAddPassword] = useState('Chef2026!');
   const [addRole, setAddRole] = useState<UserRole>('admin');
   const [addCanReply, setAddCanReply] = useState(true);
   const [submittingAdd, setSubmittingAdd] = useState(false);
@@ -69,6 +70,7 @@ export const AdminsList: React.FC = () => {
       const res = await api.createAdmin({
         full_name: addFullName.trim(),
         email: addEmail.trim(),
+        password: addPassword.trim(),
         role: addRole,
         can_reply: addRole === 'super_admin' ? true : addCanReply,
       });
@@ -76,11 +78,12 @@ export const AdminsList: React.FC = () => {
       if (res.success) {
         setFeedbackMsg({
           type: 'success',
-          text: `Administrateur créé avec succès ! Une invitation a été préparée pour ${addEmail}.`,
+          text: `Administrateur créé avec succès ! Le compte pour ${addEmail} est actif.`,
         });
         setShowAddModal(false);
         setAddFullName('');
         setAddEmail('');
+        setAddPassword('Chef2026!');
         setAddRole('admin');
         setAddCanReply(true);
         loadAdmins();
@@ -417,11 +420,25 @@ export const AdminsList: React.FC = () => {
                   required
                   value={addEmail}
                   onChange={(e) => setAddEmail(e.target.value)}
-                  placeholder="jeanluc@chefsebastien.ht"
+                  placeholder="nom@chefsebastien.ht"
                   className="w-full px-3.5 py-2.5 rounded-xl border border-stone-300 text-sm focus:ring-2 focus:ring-amber-500 focus:outline-hidden"
                 />
-                <p className="text-[11px] text-stone-400 mt-1">
-                  Une invitation d'activation par email sera transmise au collaborateur.
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-stone-700 uppercase tracking-wider mb-1">
+                  Mot de passe temporaire <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={addPassword}
+                  onChange={(e) => setAddPassword(e.target.value)}
+                  placeholder="Ex: Chef2026!"
+                  className="w-full px-3.5 py-2.5 rounded-xl border border-stone-300 text-sm font-mono focus:ring-2 focus:ring-amber-500 focus:outline-hidden"
+                />
+                <p className="text-[11px] text-stone-500 mt-1">
+                  Le collaborateur utilisera ce mot de passe pour se connecter immédiatement au tableau de bord.
                 </p>
               </div>
 
